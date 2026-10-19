@@ -12,6 +12,7 @@ const DOC_EXTS: &[&str] = &["docx", "docm", "dotx", "dotm", "doc", "dot", "odt",
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "wmf", "emf"];
 const RECIPIENT_EXTS: &[&str] = &["csv", "tsv", "txt", "xlsx", "xlsm", "ods"];
 mod font_store;
+mod host;
 const CANVAS_ID: &str = "wordcraft_canvas";
 const LOADING_ID: &str = "wordcraft_loading";
 
@@ -28,7 +29,9 @@ pub fn start() {
         };
         let dirty = Rc::new(Cell::new(false));
         let saves = Rc::new(PickerSaves::default());
-        if let Err(e) = guard_unload(dirty.clone(), saves.clone()) {
+        // Hosted, the host keeps the document and asks before closing; a page prompt would block it.
+        let hosted = host::hosted();
+        if !hosted && let Err(e) = guard_unload(dirty.clone(), saves.clone()) {
             log::error!("no unsaved-changes guard: {e}");
         }
         let mut options = eframe::WebOptions::default();
@@ -58,11 +61,20 @@ pub fn start() {
                     let doc = if sample { wordcraft_engine::sample::sample_document() } else { wordcraft_engine::blank_document(&region) };
                     let mut session = Session::new(doc);
                     session.system_region = region;
-                    let mut app = WordApp::new(session, services(inbox.clone(), cc.egui_ctx.clone(), dirty, saves.clone()));
+                    let host_state = hosted.then(|| Rc::new(host::HostState::default()));
+                    let mut app = WordApp::new(session, services(inbox.clone(), cc.egui_ctx.clone(), dirty, saves.clone(), host_state.clone()));
                     app.autosave = false;
                     // No document to show: start on File › Home, as the desktop app does (#766).
-                    if !sample {
+                    // Hosted, the host's document arrives in a moment instead.
+                    if !sample && !hosted {
                         app.start_screen();
+                    }
+                    let app = Rc::new(RefCell::new(app));
+                    if let Some(state) = host_state {
+                        match host::listen(app.clone(), state, cc.egui_ctx.clone()) {
+                            Ok(()) => host::post(&[("type", "ready".into())]),
+                            Err(e) => log::error!("hosted mode is unavailable: {e}"),
+                        }
                     }
                     Ok(Box::new(WebShell { app, inbox, saves }))
                 }),
@@ -84,7 +96,8 @@ fn query() -> String {
 /// Wraps the app to read dropped files asynchronously (browsers can't read them synchronously)
 /// and feed them through the inbox.
 struct WebShell {
-    app: WordApp,
+    /// Shared with the host's message handler in hosted mode, which acts on the app between frames.
+    app: Rc<RefCell<WordApp>>,
     inbox: Inbox,
     saves: Rc<PickerSaves>,
 }
@@ -102,19 +115,19 @@ struct PickerSaves {
 
 impl WebShell {
     /// A picker save that didn't happen leaves the document with unsaved changes.
-    fn settle_picker_saves(&mut self) {
+    fn settle_picker_saves(&mut self, app: &mut WordApp) {
         let unsaved = std::mem::take(&mut *self.saves.unsaved.borrow_mut());
         for (name, error) in unsaved {
             // Only a save in a format that keeps everything marked the document saved.
             if wordcraft_ui_egui::keeps_everything(&name) {
-                self.app.session.dirty = true;
+                app.session.dirty = true;
             }
             if let Some(error) = error {
                 let msg = wordcraft_ui_egui::i18n::fmt(
                     wordcraft_ui_egui::i18n::t("Couldn't download {name}: {error}"),
                     &[("name", &name), ("error", &error)],
                 );
-                self.app.status(msg);
+                app.status(msg);
             }
         }
     }
@@ -137,16 +150,22 @@ impl eframe::App for WebShell {
                 }
             });
         }
-        self.settle_picker_saves();
-        self.app.logic(ctx);
+        let app = self.app.clone();
+        let Ok(mut app) = app.try_borrow_mut() else { return };
+        self.settle_picker_saves(&mut app);
+        app.logic(ctx);
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        self.app.raw_input_hook(raw);
+        if let Ok(mut app) = self.app.try_borrow_mut() {
+            app.raw_input_hook(raw);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.app.ui(ui);
+        if let Ok(mut app) = self.app.try_borrow_mut() {
+            app.ui(ui);
+        }
     }
 }
 
@@ -197,7 +216,9 @@ fn listen_for_pasted_pictures(inbox: Inbox, ctx: egui::Context) -> Result<(), St
 }
 
 /// `dirty` is the flag the `beforeunload` guard reads ([`guard_unload`]).
-fn services(inbox: Inbox, ctx: egui::Context, dirty: Rc<Cell<bool>>, saves: Rc<PickerSaves>) -> Services {
+/// `host` (hosted mode): saves go to the host instead of the browser, and the host hears about unsaved changes.
+fn services(inbox: Inbox, ctx: egui::Context, dirty: Rc<Cell<bool>>, saves: Rc<PickerSaves>, host: Option<Rc<host::HostState>>) -> Services {
+    let save_host = host.clone();
     let open_inbox = inbox.clone();
     let save_ctx = ctx.clone();
     Services {
@@ -224,10 +245,18 @@ fn services(inbox: Inbox, ctx: egui::Context, dirty: Rc<Cell<bool>>, saves: Rc<P
         })),
         // Exports ask for a name; the browser decides where the download goes.
         pick_save: Some(Box::new(|name: &str| Some(name.to_string()))),
-        download: Some(Box::new(move |path: &str, bytes: &[u8]| download(&saves, &save_ctx, path, bytes))),
+        download: Some(Box::new(move |path: &str, bytes: &[u8]| match &save_host {
+            Some(state) => host::save(state, path, bytes),
+            None => download(&saves, &save_ctx, path, bytes),
+        })),
         print: Some(Box::new(print_pdf)),
         inbox: Some(inbox),
-        on_dirty: Some(Box::new(move |d| dirty.set(d))),
+        on_dirty: Some(Box::new(move |d| {
+            dirty.set(d);
+            if let Some(state) = &host {
+                host::report_dirty(state, d);
+            }
+        })),
         animations_enabled: Some(animations_enabled()),
         store_font: Some(Box::new(font_store::store)),
         forget_font: Some(Box::new(font_store::forget)),
