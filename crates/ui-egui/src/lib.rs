@@ -405,6 +405,9 @@ pub struct WordApp {
     sent_title: String,
     pub quit_requested: bool,
     pub autosave: bool,
+    /// In another app's frame (the web build's hosted mode): the host saves the document and has
+    /// its own account and links, so the title bar leaves out AutoSave, the account and Discord.
+    pub hosted: bool,
     pub word_count: (u64, usize),
     last_autosave: f64,
     /// The tab shown before the Equation tab came up (restored when editing ends).
@@ -499,6 +502,7 @@ impl WordApp {
             sent_title: String::new(),
             quit_requested: false,
             autosave: true,
+            hosted: false,
             word_count: (0, 0),
             last_autosave: 0.0,
             equation_prev_tab: None,
@@ -595,6 +599,11 @@ impl WordApp {
     /// Close, Envelopes, Labels and Finish & Merge on a document with unsaved changes first ask
     /// Save / Don't Save / Cancel, and the command runs once that is answered (`ui.saveChanges`).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        // In another app's frame, nothing the user does may replace the host's document.
+        if self.hosted && (hosted_blocks(id) || discards_document(id, &params)) {
+            self.status(tl!("Not available right now"));
+            return Err(format!("{id} is up to the app WordCraft runs in"));
+        }
         // A button whose command needs input the user hasn't given yet opens its dialog (#240).
         if let Some(name) = input_dialog(id, &params)
             && widgets::enabled(self, id)
@@ -1764,6 +1773,26 @@ fn input_dialog(id: &str, params: &Value) -> Option<&'static str> {
         "mailings.labels" if params.as_object().is_none_or(|m| m.is_empty()) => Some("labels"),
         _ => None,
     }
+}
+
+/// What the user can't do in another app's frame (hosted mode): the host chooses the document and
+/// saves it (and must be able to open what it saves, so no encryption), and has its own community
+/// links. `run` also refuses whatever else would replace the document ([`discards_document`], such
+/// as Mailings › Envelopes into a new document). The host's own calls go through `execute`, which
+/// neither limits.
+pub fn hosted_blocks(id: &str) -> bool {
+    matches!(
+        id,
+        "file.new"
+            | "file.newFromTemplate"
+            | "file.open"
+            | "file.close"
+            | "file.recover"
+            | "file.autosave"
+            | "file.encrypt"
+            | "mailings.labels"
+            | "ui.discord"
+    )
 }
 
 /// User commands that replace or close the document (`file.open` without a path only shows the
@@ -3742,6 +3771,103 @@ mod tests {
         a.session.dirty = true;
         let r = a.run("file.open", json!({"path": "host.txt", "data": data})).unwrap();
         assert_eq!(r.get("pending").and_then(|p| p.as_str()), Some("saveChanges"));
+    }
+
+    /// The whole window on a 1440 × 900 screen, drawn as the app draws it.
+    fn window(a: WordApp) -> egui_kittest::Harness<'static, WordApp> {
+        window_sized(a, 1440.0)
+    }
+
+    /// [`window`], `width` points wide.
+    fn window_sized(a: WordApp, width: f32) -> egui_kittest::Harness<'static, WordApp> {
+        egui_kittest::Harness::builder().with_size(egui::vec2(width, 900.0)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            a,
+        )
+    }
+
+    /// Hosted, the title bar leaves out AutoSave, the account and Discord; otherwise they show.
+    #[test]
+    fn hosted_title_bar_leaves_out_autosave_account_and_discord() {
+        for hosted in [false, true] {
+            let mut a = app();
+            a.hosted = hosted;
+            a.ui.show_discord = true;
+            let mut h = window(a);
+            h.run_steps(4);
+            for label in ["AutoSave", "Discord", "Account"] {
+                assert_eq!(h.query_by_label(label).is_some(), !hosted, "{label}, hosted: {hosted}");
+            }
+        }
+    }
+
+    /// Hosted, the user can't swap in another document (the host chooses it) or encrypt it (the
+    /// host couldn't open it again); the host's own `execute` still opens one.
+    #[test]
+    fn hosted_blocks_what_would_swap_the_document() {
+        let mut a = app();
+        a.hosted = true;
+        for id in ["file.new", "file.open", "file.close", "file.encrypt", "file.autosave", "mailings.labels", "ui.discord"] {
+            assert!(!widgets::enabled(&a, id), "{id} is greyed out");
+            a.status_msg = None;
+            assert!(a.run(id, json!({})).is_err(), "{id} doesn't run");
+            assert!(a.status_msg.is_some(), "{id}: the status bar says why nothing happened");
+        }
+        // What replaces the document only with some parameters is refused with those.
+        assert!(a.run("mailings.envelopes", json!({})).is_err(), "envelopes into a new document");
+        assert!(a.run("mailings.finish", json!({})).is_err(), "a merge into a new document");
+        assert!(
+            !a.run("mailings.envelopes", json!({"add": true})).is_err_and(|e| e.contains("runs in")),
+            "an envelope added to this document is allowed"
+        );
+        assert!(widgets::enabled(&a, "file.save"), "saving is still there");
+        let data = wordcraft_engine::cmd::insert::base64_encode(b"From the host");
+        assert!(a.execute("file.open", json!({"path": "h.txt", "data": data})).is_ok(), "the host still opens");
+        a.hosted = false;
+        assert!(widgets::enabled(&a, "file.new"), "outside a host, New is there");
+    }
+
+    /// Hosted, File has no Home, New or Open page (Info is shown instead) and no Discord link.
+    #[test]
+    fn hosted_backstage_offers_no_other_document() {
+        let mut a = app();
+        a.hosted = true;
+        a.ui.backstage = true;
+        a.ui.backstage_page = "home".into();
+        let mut h = window(a);
+        h.run_steps(4);
+        assert_eq!(h.state().ui.backstage_page, "info", "Info in place of Home");
+        assert!(h.query_all_by_label("Discord community").next().is_none());
+        assert!(h.query_all_by_label("Export").next().is_some(), "the rest of File is there");
+    }
+
+    /// A short status bar leaves out its least needed text, the language first, instead of
+    /// drawing it under the zoom and view buttons; the page and word count stay longest.
+    #[test]
+    fn a_short_status_bar_gives_way_from_the_language() {
+        for (width, language, words) in [(1440.0, true, true), (430.0, false, true), (260.0, false, false)] {
+            let a = app();
+            let lang = crate::ribbon::caret_language(&a);
+            let mut h = window_sized(a, width);
+            h.run_steps(4);
+            assert!(h.query_all_by_label("Page 1 of 1").next().is_some(), "the page, {width} wide");
+            assert_eq!(h.query_all_by_label(&lang).next().is_some(), language, "the language, {width} wide");
+            assert_eq!(h.query_all_by_label("0 words").next().is_some(), words, "the word count, {width} wide");
+        }
+    }
+
+    /// Hosted, the title names only the document; the host shows whether its file is saved.
+    #[test]
+    fn hosted_title_names_only_the_document() {
+        let mut a = app();
+        a.session.dirty = true;
+        assert_eq!(crate::chrome::title_text(&a), format!("{} — Edited", a.title_stem()));
+        a.hosted = true;
+        assert_eq!(crate::chrome::title_text(&a), a.title_stem().to_string());
     }
 
     #[test]

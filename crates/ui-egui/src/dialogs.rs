@@ -2240,14 +2240,10 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
             let r = ui.add(egui::TextEdit::singleline(query).hint_text(tl!("Type a command, e.g. \"insert table\"")).desired_width(380.0));
             r.request_focus();
             let reg = app.session.registry.clone();
-            // An empty box suggests a few common commands, as Word's Search does.
-            let mut hits: Vec<&wordcraft_engine::CommandSpec> = if query.trim().is_empty() {
+            if query.trim().is_empty() {
                 ui.label(egui::RichText::new(tl!("Suggested")).font(semibold(12.5)));
-                SEARCH_SUGGESTIONS.iter().filter_map(|id| reg.get(id)).collect()
-            } else {
-                reg.all().iter().filter(|c| command_matches(c, query)).collect()
-            };
-            hits.truncate(14);
+            }
+            let hits = search_hits(&reg, query, app.hosted);
             let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
             let mut run: Option<&str> = enter.then(|| hits.first().map(|c| c.id)).flatten();
             for c in &hits {
@@ -3056,6 +3052,20 @@ fn swallow_shortcut_text(swallow: &mut bool, e: &egui::Event) -> bool {
     }
 }
 
+/// What Search offers for `query`: the matching commands, or a few common ones (as Word's Search
+/// suggests) when it is empty; at most 14. In another app's frame, not what can't be done there
+/// ([`crate::hosted_blocks`]).
+fn search_hits<'a>(reg: &'a wordcraft_engine::Registry, query: &str, hosted: bool) -> Vec<&'a wordcraft_engine::CommandSpec> {
+    let mut hits: Vec<&wordcraft_engine::CommandSpec> = if query.trim().is_empty() {
+        SEARCH_SUGGESTIONS.iter().filter_map(|id| reg.get(id)).collect()
+    } else {
+        reg.all().iter().filter(|c| command_matches(c, query)).collect()
+    };
+    hits.retain(|c| !(hosted && crate::hosted_blocks(c.id)));
+    hits.truncate(14);
+    hits
+}
+
 /// Search's filter: every word of the query is in the command's label, location or id, in English
 /// or in the interface language, so "insert table" finds Insert › Tables › Table (#819).
 fn command_matches(c: &wordcraft_engine::CommandSpec, query: &str) -> bool {
@@ -3276,6 +3286,17 @@ fn enclose_preview(ui: &mut Ui, style: &str, text: &str, shape: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// In another app's frame, Search doesn't offer what can't be done there.
+    #[test]
+    fn hosted_search_leaves_out_what_the_host_does() {
+        let session = wordcraft_engine::Session::new(wordcraft_doc::Document::new());
+        let ids = |query: &str, hosted| search_hits(&session.registry, query, hosted).iter().map(|c| c.id).collect::<Vec<_>>();
+        assert!(ids("file.open", false).contains(&"file.open"), "{:?}", ids("file.open", false));
+        assert!(!ids("file.open", true).contains(&"file.open"));
+        assert!(ids("", true).iter().all(|id| !crate::hosted_blocks(id)), "nor among the suggestions");
+        assert!(ids("file.save", true).contains(&"file.save"), "saving is still offered");
+    }
     use wordcraft_doc::Pos;
     use wordcraft_doc::props::Align;
     use wordcraft_engine::Session;

@@ -9,6 +9,7 @@
 //! From the host (only the frame's own parent window is listened to):
 //! - `{type: "open", doc, name, bytes: Uint8Array}` opens a document (as Open would).
 //! - `{type: "command", doc, id}` runs one of [`crate::host_rules::HOST_COMMANDS`] on that document.
+//! - `{type: "theme", value: "light" | "dark" | "system"}` sets the appearance, to match the host's.
 //!
 //! To the host:
 //! - `{type: "ready"}` once the app is running and listening.
@@ -153,6 +154,13 @@ pub fn listen(app: Rc<RefCell<WordApp>>, state: Rc<HostState>, ctx: egui::Contex
                     log::warn!("host: command {id} is not one a host may run");
                 } else if let Err(err) = settled(app.execute(&id, serde_json::json!({}))) {
                     log::error!("host command {id} failed: {err}");
+                }
+                ctx.request_repaint();
+            }
+            "theme" => {
+                let Some(value) = text("value") else { return };
+                if let Err(err) = app.execute("ui.theme", serde_json::json!({"value": value})) {
+                    log::warn!("host: theme {value:?}: {err}");
                 }
                 ctx.request_repaint();
             }

@@ -222,49 +222,56 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
             let mut right_start = full.max.x;
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
-                // AutoSave switch: greyed out, with the reason as its tooltip, when AutoSave can't
-                // cover the document (#196, #176); clicking it then offers Save As where that helps.
-                let block = app.autosave_block();
-                let on = app.autosaves();
-                let label = if block.is_some() { t.text_dim.gamma_multiply(0.6) } else { t.text_dim };
-                ui.label(egui::RichText::new(tl!("AutoSave")).font(regular(11.5)).color(label));
-                let (r, resp) = ui.allocate_exact_size(vec2(30.0, 16.0), Sense::click());
-                let (fill, stroke, knob_fill) = match (&block, on) {
-                    (Some(_), _) => (t.input.gamma_multiply(0.5), t.border.gamma_multiply(0.7), t.text_dim.gamma_multiply(0.45)),
-                    (None, true) => (t.accent, t.accent, t.on_accent),
-                    (None, false) => (t.input, t.border_strong, t.text_dim),
-                };
-                ui.painter().rect(r, 8.0, fill, Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
-                let knob = if on { r.max.x - 8.0 } else { r.min.x + 8.0 };
-                ui.painter().circle_filled(pos2(knob, r.center().y), 5.0, knob_fill);
-                let tip = block
-                    .as_ref()
-                    .map_or_else(|| tl!("AutoSave saves every change to the file (needs a saved document)").to_string(), |b| b.reason());
-                if resp.on_hover_text(tip).clicked() {
-                    match block {
-                        None => {
-                            let _ = app.run("file.autosave", json!({}));
+                // In another app's frame the host saves the document: no AutoSave switch.
+                if !app.hosted {
+                    // AutoSave switch: greyed out, with the reason as its tooltip, when AutoSave can't
+                    // cover the document (#196, #176); clicking it then offers Save As where that helps.
+                    let block = app.autosave_block();
+                    let on = app.autosaves();
+                    let label = if block.is_some() { t.text_dim.gamma_multiply(0.6) } else { t.text_dim };
+                    ui.label(egui::RichText::new(tl!("AutoSave")).font(regular(11.5)).color(label));
+                    let (r, resp) = ui.allocate_exact_size(vec2(30.0, 16.0), Sense::click());
+                    let (fill, stroke, knob_fill) = match (&block, on) {
+                        (Some(_), _) => (t.input.gamma_multiply(0.5), t.border.gamma_multiply(0.7), t.text_dim.gamma_multiply(0.45)),
+                        (None, true) => (t.accent, t.accent, t.on_accent),
+                        (None, false) => (t.input, t.border_strong, t.text_dim),
+                    };
+                    ui.painter().rect(r, 8.0, fill, Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
+                    let knob = if on { r.max.x - 8.0 } else { r.min.x + 8.0 };
+                    ui.painter().circle_filled(pos2(knob, r.center().y), 5.0, knob_fill);
+                    let tip = block
+                        .as_ref()
+                        .map_or_else(|| tl!("AutoSave saves every change to the file (needs a saved document)").to_string(), |b| b.reason());
+                    if resp.on_hover_text(tip).clicked() {
+                        match block {
+                            None => {
+                                let _ = app.run("file.autosave", json!({}));
+                            }
+                            // AutoSave comes on once Save As has saved (maybe on a later frame, #94).
+                            Some(b) if b.save_as_helps() => {
+                                let _ = app.save_as(crate::file_dialogs::AfterSave::AutoSave);
+                            }
+                            Some(b) => app.status(b.reason()),
                         }
-                        // AutoSave comes on once Save As has saved (maybe on a later frame, #94).
-                        Some(b) if b.save_as_helps() => {
-                            let _ = app.save_as(crate::file_dialogs::AfterSave::AutoSave);
-                        }
-                        Some(b) => app.status(b.reason()),
                     }
+                    ui.add_space(8.0);
                 }
-                ui.add_space(8.0);
                 quick_access(ui, app);
                 qat_end = ui.min_rect().max.x;
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Account / community.
-                    let (r, resp) = ui.allocate_exact_size(vec2(control_h, control_h), Sense::click());
-                    ui.painter().circle_filled(r.center(), control_h / 2.0 - 1.0, t.accent);
-                    let initials: String = app.session.user_initials().chars().take(2).collect();
-                    ui.painter().text(r.center(), Align2::CENTER_CENTER, initials, semibold(10.5), t.on_accent);
-                    resp.on_hover_text(format!("{} — set your name in File › Options", app.session.author));
-                    ui.add_space(8.0);
-                    if app.ui.show_discord {
+                    // Account / community; not in another app's frame, which has its own.
+                    if !app.hosted {
+                        let (r, resp) = ui.allocate_exact_size(vec2(control_h, control_h), Sense::click());
+                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("Account")));
+                        ui.painter().circle_filled(r.center(), control_h / 2.0 - 1.0, t.accent);
+                        let initials: String = app.session.user_initials().chars().take(2).collect();
+                        ui.painter().text(r.center(), Align2::CENTER_CENTER, initials, semibold(10.5), t.on_accent);
+                        resp.on_hover_text(format!("{} — set your name in File › Options", app.session.author));
+                        ui.add_space(8.0);
+                    }
+                    if app.ui.show_discord && !app.hosted {
                         let (r, resp) = ui.allocate_exact_size(vec2(84.0, 22.0), Sense::click());
+                        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("Discord")));
                         ui.painter().rect_filled(r, 11.0, if resp.hovered() { t.accent_text } else { t.accent });
                         icons::paint(
                             ui.painter(),
@@ -315,17 +322,7 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
                 });
             });
             // Centred title.
-            let title = format!(
-                "{} — {}",
-                app.title_stem(),
-                if app.session.dirty {
-                    tl!("Edited")
-                } else if app.session.path.is_some() {
-                    tl!("Saved")
-                } else {
-                    tl!("Not saved")
-                }
-            );
+            let title = title_text(app);
             let font = TypeRung::Chrome.semibold();
             let track = TypeRung::Chrome.tracking();
             let w = text_width(ui.painter(), &title, &font, track, t.text);
@@ -344,6 +341,11 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
         });
 }
 
+/// Status bar: the zoom buttons', the view buttons' and the zoom slider's widths.
+const SMALL_ICON: f32 = 18.0;
+const VIEW_ICON: f32 = 22.0;
+const SLIDER_W: f32 = 110.0;
+
 pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     egui::Panel::bottom("status")
@@ -357,22 +359,19 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
         .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing = vec2(14.0, 0.0);
-                let l = app.session.layout();
-                let page = l.caret_on(&app.session.sel.focus, app.session.page_hint).map(|c| c.page + 1).unwrap_or(1);
+                let spacing = ui.spacing().item_spacing.x;
+                let font = TypeRung::Caption.regular();
+                let tracking = TypeRung::Caption.tracking();
+                let measure = |ui: &Ui, s: &str| text_width(ui.painter(), s, &font, tracking, t.text_dim) + 1.0;
                 let st = |ui: &mut Ui, s: &str| {
-                    let font = TypeRung::Caption.regular();
-                    let track = TypeRung::Caption.tracking();
-                    let w = text_width(ui.painter(), s, &font, track, t.text_dim);
-                    let (r, resp) = ui.allocate_exact_size(vec2(w + 1.0, TypeRung::Caption.line_height()), Sense::click());
-                    paint_text(ui.painter(), pos2(r.min.x, r.min.y), Align2::LEFT_TOP, s, &font, track, t.text_dim);
+                    let (r, resp) = ui.allocate_exact_size(vec2(measure(ui, s), TypeRung::Caption.line_height()), Sense::click());
+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, s));
+                    paint_text(ui.painter(), pos2(r.min.x, r.min.y), Align2::LEFT_TOP, s, &font, tracking, t.text_dim);
                     resp
                 };
-                if st(ui, &crate::i18n::fmt(tl!("Page {page} of {pages}"), &[("page", &page.to_string()), ("pages", &l.pages.len().to_string())]))
-                    .on_hover_text(tl!("Go To (⌘⌥G)"))
-                    .clicked()
-                {
-                    let _ = app.run("ui.dialog", json!({"name": "goto"}));
-                }
+                let l = app.session.layout();
+                let page = l.caret_on(&app.session.sel.focus, app.session.page_hint).map(|c| c.page + 1).unwrap_or(1);
+                let page_txt = crate::i18n::fmt(tl!("Page {page} of {pages}"), &[("page", &page.to_string()), ("pages", &l.pages.len().to_string())]);
                 let words = app.cached_word_count();
                 // A selected picture/shape/text box isn't a text selection: show the total.
                 let wtxt = if app.session.sel.is_collapsed() || crate::objects::selected(app).is_some() {
@@ -381,38 +380,86 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
                     let sw = wordcraft_doc::count_words(&app.session.selected_text());
                     crate::i18n::fmt(tl!("{selected} of {words} words"), &[("selected", &sw.to_string()), ("words", &words.to_string())])
                 };
-                if st(ui, &wtxt).clicked() {
+                let header = app.session.sel.focus.story != StoryRef::Body && !crate::canvas::in_text_box(app);
+                let lang = crate::ribbon::caret_language(app);
+                let reading = app.session.view.read_mode;
+                let z = (if reading { app.session.view.read_zoom } else { app.canvas.scale / crate::canvas::PX_PER_PT } * 100.0).round();
+                let ztxt = format!("{z}%");
+                let focus = tl!("Focus");
+                let focus_full = (ui.ctx().fonts_mut(|f| f.layout_no_wrap(focus.to_string(), regular(11.5), t.text_dim).size().x) + 26.0).max(56.0);
+
+                // The text at the left, most needed first. On a short bar the controls at the right
+                // give up the zoom slider and the Focus label, then this text goes from its end.
+                #[derive(Clone, Copy, PartialEq)]
+                enum Item {
+                    Page,
+                    Words,
+                    Track,
+                    Overtype,
+                    Header,
+                    Language,
+                }
+                let mut items: Vec<(Item, &str)> = vec![(Item::Page, &page_txt), (Item::Words, &wtxt)];
+                if app.session.doc.settings.track_changes {
+                    items.push((Item::Track, tl!("Track Changes: On")));
+                }
+                if app.session.prefs.overtype {
+                    items.push((Item::Overtype, tl!("Overtype")));
+                }
+                if header {
+                    items.push((Item::Header, tl!("Editing header/footer")));
+                }
+                items.push((Item::Language, &lang));
+                let widths: Vec<f32> = items.iter().map(|(_, s)| measure(ui, s)).collect();
+                // Zoom %, +, slider, −, the three views and Focus, 4 apart, with the gaps between them.
+                let controls = |slider: f32, focus: f32| {
+                    measure(ui, &ztxt) + 2.0 * SMALL_ICON + slider + 10.0 + 3.0 * VIEW_ICON + 8.0 + focus + 9.0 * 4.0 + spacing
+                };
+                let fit =
+                    crate::widgets::fit_row(&widths, spacing, ui.available_width(), controls(SLIDER_W, focus_full), controls(0.0, VIEW_ICON), 0.0);
+                let controls_w = if fit.compact { controls(0.0, VIEW_ICON) } else { controls(SLIDER_W, focus_full) };
+                let kept: Vec<Item> = items.iter().take(fit.shown).map(|(item, _)| *item).collect();
+                let show = |item: Item| kept.contains(&item);
+
+                if st(ui, &page_txt).on_hover_text(tl!("Go To (⌘⌥G)")).clicked() {
+                    let _ = app.run("ui.dialog", json!({"name": "goto"}));
+                }
+                if show(Item::Words) && st(ui, &wtxt).clicked() {
                     let _ = app.run("ui.dialog", json!({"name": "wordCount"}));
                 }
-                if app.session.sel.focus.story != StoryRef::Body && !crate::canvas::in_text_box(app) {
+                if show(Item::Header) {
                     st(ui, tl!("Editing header/footer"));
                 }
                 // The language at the caret; a click sets the proofing language (Review › Language).
-                let lang = crate::ribbon::caret_language(app);
-                let resp = st(ui, &lang).on_hover_text(tl!("Language"));
-                egui::Popup::menu(&resp).show(|ui| {
-                    ui.set_min_width(200.0);
-                    crate::ribbon::language_menu(ui, app);
-                });
-                if app.session.doc.settings.track_changes {
+                if show(Item::Language) {
+                    let resp = st(ui, &lang).on_hover_text(tl!("Language"));
+                    egui::Popup::menu(&resp).show(|ui| {
+                        ui.set_min_width(200.0);
+                        crate::ribbon::language_menu(ui, app);
+                    });
+                }
+                if show(Item::Track) {
                     st(ui, tl!("Track Changes: On"));
                 }
-                if app.session.prefs.overtype && st(ui, tl!("Overtype")).on_hover_text(tl!("Click to switch back to inserting")).clicked() {
+                if show(Item::Overtype) && st(ui, tl!("Overtype")).on_hover_text(tl!("Click to switch back to inserting")).clicked() {
                     let _ = app.run("text.overtype", json!({"value": false}));
                 }
+                // A status message, cut off where the controls begin.
+                let room = ui.max_rect().max.x - controls_w - ui.cursor().min.x;
                 if let Some((msg, at)) = &app.status_msg
                     && crate::now_ms() - at < 6000.0
+                    && room > 0.0
                 {
-                    let font = TypeRung::Caption.regular();
-                    let track = TypeRung::Caption.tracking();
-                    paint_text(ui.painter(), pos2(ui.cursor().min.x, ui.cursor().min.y), Align2::LEFT_TOP, msg, &font, track, t.accent_text);
-                    ui.allocate_space(vec2(text_width(ui.painter(), msg, &font, track, t.accent_text) + 1.0, TypeRung::Caption.line_height()));
+                    let at = ui.cursor().min;
+                    let clip = Rect::from_min_max(at, pos2(at.x + room, ui.max_rect().max.y));
+                    paint_text(&ui.painter().with_clip_rect(clip), at, Align2::LEFT_TOP, msg, &font, tracking, t.accent_text);
+                    ui.allocate_space(vec2(
+                        (text_width(ui.painter(), msg, &font, tracking, t.accent_text) + 1.0).min(room),
+                        TypeRung::Caption.line_height(),
+                    ));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing = vec2(4.0, 0.0);
-                    let reading = app.session.view.read_mode;
-                    let z = (if reading { app.session.view.read_zoom } else { app.canvas.scale / crate::canvas::PX_PER_PT } * 100.0).round();
-                    let ztxt = format!("{z}%");
                     let zfont = TypeRung::Caption.regular();
                     let ztrack = TypeRung::Caption.tracking();
                     let zw = text_width(ui.painter(), &ztxt, &zfont, ztrack, t.text_dim);
@@ -429,12 +476,14 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
                         }
                     }
                     // Reading zoom changes only reading presentation, never the normal view zoom.
-                    let mut v = if reading { app.session.view.read_zoom } else { app.canvas.scale / crate::canvas::PX_PER_PT };
-                    let slider = egui::Slider::new(&mut v, if reading { 0.75..=1.5 } else { 0.1..=5.0 }).logarithmic(!reading).show_value(false);
-                    ui.spacing_mut().slider_width = 110.0;
-                    if ui.add(slider).changed() {
-                        let command = if reading { "view.readTextSize" } else { "view.zoom" };
-                        let _ = app.run(command, json!({"value": (v * 100.0).round()}));
+                    if !fit.compact {
+                        let mut v = if reading { app.session.view.read_zoom } else { app.canvas.scale / crate::canvas::PX_PER_PT };
+                        let slider = egui::Slider::new(&mut v, if reading { 0.75..=1.5 } else { 0.1..=5.0 }).logarithmic(!reading).show_value(false);
+                        ui.spacing_mut().slider_width = SLIDER_W;
+                        if ui.add(slider).changed() {
+                            let command = if reading { "view.readTextSize" } else { "view.zoom" };
+                            let _ = app.run(command, json!({"value": (v * 100.0).round()}));
+                        }
                     }
                     if small_icon(ui, "minus", tl!("Zoom Out")) {
                         if reading {
@@ -451,7 +500,7 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
                         ("printLayout", "view.printLayout", mode == wordcraft_layout::ViewMode::Print && !read),
                         ("readMode", "view.readMode", read),
                     ] {
-                        let (r, resp) = ui.allocate_exact_size(vec2(22.0, 20.0), Sense::click());
+                        let (r, resp) = ui.allocate_exact_size(vec2(VIEW_ICON, 20.0), Sense::click());
                         if on {
                             ui.painter().rect_filled(r, 3.0, t.checked);
                         } else if resp.hovered() {
@@ -463,24 +512,26 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
                         }
                     }
                     ui.add_space(8.0);
-                    let focus = tl!("Focus");
-                    let focus_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(focus.to_string(), regular(11.5), t.text_dim).size().x);
-                    let (r, resp) = ui.allocate_exact_size(vec2((focus_w + 26.0).max(56.0), 20.0), Sense::click());
+                    // Focus: only its icon (named in its tooltip) on a short bar.
+                    let (r, resp) = ui.allocate_exact_size(vec2(if fit.compact { VIEW_ICON } else { focus_full }, 20.0), Sense::click());
                     if resp.hovered() {
                         ui.painter().rect_filled(r, 3.0, t.hover);
                     }
-                    icons::paint(ui.painter(), Rect::from_min_size(r.min + vec2(2.0, 2.0), vec2(16.0, 16.0)), "focus", t.icon, t.accent);
-                    let ffont = TypeRung::Caption.regular();
-                    let ftrack = TypeRung::Caption.tracking();
-                    paint_text(
-                        ui.painter(),
-                        pos2(r.min.x + 22.0, r.center().y - TypeRung::Caption.line_height() / 2.0),
-                        Align2::LEFT_TOP,
-                        focus,
-                        &ffont,
-                        ftrack,
-                        t.text_dim,
-                    );
+                    icons::paint(ui.painter(), Rect::from_min_size(r.min + vec2(3.0, 2.0), vec2(16.0, 16.0)), "focus", t.icon, t.accent);
+                    let resp = if fit.compact {
+                        resp.on_hover_text(focus)
+                    } else {
+                        paint_text(
+                            ui.painter(),
+                            pos2(r.min.x + 22.0, r.center().y - TypeRung::Caption.line_height() / 2.0),
+                            Align2::LEFT_TOP,
+                            focus,
+                            &font,
+                            tracking,
+                            t.text_dim,
+                        );
+                        resp
+                    };
                     if resp.clicked() {
                         let _ = app.run("view.focus", json!({}));
                     }
@@ -489,9 +540,25 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
         });
 }
 
+/// The title bar's title: the document and whether it is saved. In another app's frame, only the
+/// document: the host knows whether its file is saved, and says so itself.
+pub(crate) fn title_text(app: &WordApp) -> String {
+    if app.hosted {
+        return app.title_stem().to_string();
+    }
+    let state = if app.session.dirty {
+        tl!("Edited")
+    } else if app.session.path.is_some() {
+        tl!("Saved")
+    } else {
+        tl!("Not saved")
+    };
+    format!("{} — {state}", app.title_stem())
+}
+
 fn small_icon(ui: &mut Ui, icon: &str, tip: &str) -> bool {
     let t = Tokens::get(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(SMALL_ICON, SMALL_ICON), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(r, 3.0, t.hover);
     }
