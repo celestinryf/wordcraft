@@ -3726,6 +3726,24 @@ mod tests {
         assert!(!wordcraft_engine::io::open_bytes(&name, &bytes).unwrap().passthrough.contains_key("word/vbaProject.bin"));
     }
 
+    /// The web build's hosted mode opens a host's documents with `execute`: unsaved changes in the
+    /// document on show are the host's to handle, so no "Save changes?" dialog may take the place of
+    /// the open, which `run` would show.
+    #[test]
+    fn execute_opens_over_unsaved_changes_without_a_dialog() {
+        let mut a = app();
+        a.session.dirty = true;
+        let data = wordcraft_engine::cmd::insert::base64_encode(b"Opened by the host");
+        let r = a.execute("file.open", json!({"path": "host.txt", "data": data})).unwrap();
+        assert!(r.get("pending").is_none(), "nothing waits on the user: {r}");
+        assert!(a.dialog.is_none(), "no Save changes dialog");
+        assert!(a.session.doc.plain_text(wordcraft_doc::StoryRef::Body).contains("Opened by the host"));
+        // `run` keeps asking, as the ribbon's Open should.
+        a.session.dirty = true;
+        let r = a.run("file.open", json!({"path": "host.txt", "data": data})).unwrap();
+        assert_eq!(r.get("pending").and_then(|p| p.as_str()), Some("saveChanges"));
+    }
+
     #[test]
     fn dark_page_survives_restart() {
         let mut first = app();
