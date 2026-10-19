@@ -64,6 +64,7 @@ pub fn start() {
                     let host_state = hosted.then(|| Rc::new(host::HostState::default()));
                     let mut app = WordApp::new(session, services(inbox.clone(), cc.egui_ctx.clone(), dirty, saves.clone(), host_state.clone()));
                     app.autosave = false;
+                    app.hosted = hosted;
                     // No document to show: start on File › Home, as the desktop app does (#766).
                     // Hosted, the host's document arrives in a moment instead.
                     if !sample && !hosted {

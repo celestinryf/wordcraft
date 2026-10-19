@@ -18,9 +18,16 @@ const PAGES: [(&str, &str); 9] = [
     ("options", "Options"),
 ];
 
+/// The pages left out in another app's frame (hosted mode), where the host chooses the document.
+const HOSTED_HIDDEN: [&str; 3] = ["home", "new", "open"];
+
 pub fn show(app: &mut WordApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let mac = app.integrated_titlebar;
+    let hosted = app.hosted;
+    if hosted && HOSTED_HIDDEN.contains(&app.ui.backstage_page.as_str()) {
+        app.ui.backstage_page = "info".into();
+    }
     egui::Panel::left("backstage_nav")
         .exact_size(200.0)
         // Fixed width, as in Word: without this egui shows a resize handle that does nothing (#502).
@@ -57,7 +64,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                 app.canvas.want_focus = true;
             }
             ui.add_space(if mac { 12.0 } else { 6.0 });
-            for (id, label) in PAGES {
+            for (id, label) in PAGES.into_iter().filter(|(id, _)| !(hosted && HOSTED_HIDDEN.contains(id))) {
                 let (r, resp) = ui.allocate_exact_size(vec2(200.0, 38.0), Sense::click());
                 resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tl!(label)));
                 let active = app.ui.backstage_page == id;
@@ -98,7 +105,8 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                 }
             }
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                for (label, id) in [("About", "about"), ("Discord community", "discord")] {
+                for (label, id) in [("About", "about"), ("Discord community", "discord")].into_iter().filter(|(_, id)| !(hosted && *id == "discord"))
+                {
                     let (r, resp) = ui.allocate_exact_size(vec2(200.0, 32.0), Sense::click());
                     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tl!(label)));
                     if resp.hovered() {

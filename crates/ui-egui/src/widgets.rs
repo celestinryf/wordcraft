@@ -90,6 +90,9 @@ fn keytip_badge(ui: &Ui, rect: Rect, id: &str, name: &str) {
 
 /// Whether a command exists and is enabled.
 pub fn enabled(app: &WordApp, id: &str) -> bool {
+    if app.hosted && crate::hosted_blocks(id) {
+        return false;
+    }
     match app.session.registry.get(id) {
         Some(s) => (s.enabled)(&app.session).is_none(),
         // Zotero: one command at a time, and only in the desktop app.
@@ -814,13 +817,55 @@ pub fn icon_text_menu_button(ui: &mut Ui, icon: &str, text: &str, font: egui::Fo
     icon_text_button_with(ui, icon, text, font, true)
 }
 
+/// How much of a row fits: see [`fit_row`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RowFit {
+    /// How many items, from the first, are shown.
+    pub shown: usize,
+    /// Whether the controls at the end of the row show only their icons.
+    pub compact: bool,
+}
+
+/// Lays out a row of items followed by controls in `available` points, such as the ribbon's tabs
+/// and its Share, Editing and Comments buttons, or the status bar's text and its zoom and views.
+/// `widths` are the items', most needed first, each followed by `spacing`. `full` and `compact`
+/// are the controls with their names and with only their icons. `overflow` is the width of a
+/// menu holding the items that don't fit (0 when they are left out). The controls give up their
+/// names before any item goes, and the first item always shows.
+pub fn fit_row(widths: &[f32], spacing: f32, available: f32, full: f32, compact: f32, overflow: f32) -> RowFit {
+    let row = |n: usize| widths.iter().take(n).map(|w| w + spacing).sum::<f32>();
+    let all = widths.len();
+    if row(all) + full <= available {
+        return RowFit { shown: all, compact: false };
+    }
+    if row(all) + compact <= available {
+        return RowFit { shown: all, compact: true };
+    }
+    let menu = if overflow > 0.0 { overflow + spacing } else { 0.0 };
+    let shown = (1..=all).take_while(|&n| row(n) + compact + menu <= available).last().unwrap_or(0);
+    RowFit { shown: shown.max(all.min(1)), compact: true }
+}
+
+/// The width [`icon_text_button`] (or, with `marker`, [`icon_text_menu_button`]) takes, to lay out
+/// a row before drawing it.
+pub fn icon_text_button_width(ui: &Ui, text: &str, font: egui::FontId, marker: bool) -> f32 {
+    icon_text_size(ui, &ui.painter().layout_no_wrap(text.to_string(), font, Color32::PLACEHOLDER), marker).x
+}
+
+const ICON_TEXT_ICON: f32 = 16.0;
+
+fn icon_text_size(ui: &Ui, galley: &egui::Galley, marker: bool) -> egui::Vec2 {
+    let pad = ui.spacing().button_padding;
+    let marker_w = if marker { DROPDOWN + 4.0 } else { 0.0 };
+    vec2(pad.x + ICON_TEXT_ICON + 4.0 + galley.size().x + marker_w + pad.x, galley.size().y.max(ICON_TEXT_ICON) + 2.0 * pad.y)
+}
+
 fn icon_text_button_with(ui: &mut Ui, icon: &str, text: &str, font: egui::FontId, marker: bool) -> Response {
     let t = Tokens::get(ui.ctx());
     let galley = ui.painter().layout_no_wrap(text.to_string(), font, Color32::PLACEHOLDER);
     let pad = ui.spacing().button_padding;
-    let icon_w = 16.0;
-    let marker_w = if marker { DROPDOWN + 4.0 } else { 0.0 };
-    let size = vec2(pad.x + icon_w + 4.0 + galley.size().x + marker_w + pad.x, galley.size().y.max(icon_w) + 2.0 * pad.y);
+    let icon_w = ICON_TEXT_ICON;
+    let size = icon_text_size(ui, &galley, marker);
     let (r, resp) = ui.allocate_exact_size(size, Sense::click());
     let st = drawn_state(ui, &resp, true);
     let r = r.expand(st.expansion);
@@ -845,6 +890,37 @@ fn icon_text_button_with(ui: &mut Ui, icon: &str, text: &str, font: egui::FontId
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_row_gives_up_control_names_before_any_item() {
+        let items = [40.0, 50.0, 60.0]; // 156 with 2 after each
+        let fit = |available| fit_row(&items, 2.0, available, 200.0, 80.0, 22.0);
+        let row = |shown, compact| RowFit { shown, compact };
+        assert_eq!(fit(1000.0), row(3, false), "room for everything");
+        assert_eq!(fit(356.0), row(3, false), "exactly enough");
+        assert_eq!(fit(300.0), row(3, true), "the controls lose their names first");
+        assert_eq!(fit(236.0), row(3, true));
+        // 150 - 80 - (22 + 2) leaves 46 for items: only the first (42).
+        assert_eq!(fit(150.0), row(1, true), "then items move into the menu");
+        assert_eq!(fit(200.0), row(2, true));
+    }
+
+    #[test]
+    fn a_row_without_a_menu_keeps_more_items() {
+        // Nothing reserved for a menu: 150 - 80 leaves 70 for items, still only the first (42 + 52 > 70).
+        assert_eq!(fit_row(&[40.0, 50.0, 60.0], 2.0, 150.0, 200.0, 80.0, 0.0).shown, 1);
+        // 175 - 80 leaves 95: two items (94), where a menu of 22 would leave room for one.
+        assert_eq!(fit_row(&[40.0, 50.0, 60.0], 2.0, 175.0, 200.0, 80.0, 0.0).shown, 2);
+        assert_eq!(fit_row(&[40.0, 50.0, 60.0], 2.0, 175.0, 200.0, 80.0, 22.0).shown, 1);
+    }
+
+    #[test]
+    fn a_row_always_shows_its_first_item() {
+        assert_eq!(fit_row(&[40.0, 50.0], 2.0, 10.0, 200.0, 80.0, 22.0), RowFit { shown: 1, compact: true });
+        assert_eq!(fit_row(&[40.0], 2.0, 0.0, 200.0, 80.0, 22.0).shown, 1);
+        assert_eq!(fit_row(&[40.0, 50.0], 2.0, f32::NAN, 200.0, 80.0, 22.0).shown, 1, "a width that isn't a number");
+        assert_eq!(fit_row(&[], 2.0, 10.0, 200.0, 80.0, 22.0).shown, 0, "no items, nothing to show");
+    }
 
     /// #653: a large button's label line is no taller than `LABEL_LINE_H` in the interface font, so
     /// two lines (checked at compile time) end above the group title row.
