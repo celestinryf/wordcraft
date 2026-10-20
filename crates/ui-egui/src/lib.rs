@@ -3870,6 +3870,20 @@ mod tests {
         assert_eq!(crate::chrome::title_text(&a), a.title_stem().to_string());
     }
 
+    /// The dark page is a way of looking at the document, not a change to it: a host turning it on
+    /// (the web build's `page` message) leaves the document unsaved-free and its text as it was.
+    #[test]
+    fn dark_page_leaves_the_document_unchanged() {
+        let mut a = app();
+        let before = a.session.doc.plain_text(wordcraft_doc::StoryRef::Body);
+        a.execute("view.darkMode", json!({"value": true})).unwrap();
+        assert!(a.session.view.dark_mode);
+        assert!(!a.session.dirty, "turning the page dark is not an edit");
+        assert_eq!(a.session.doc.plain_text(wordcraft_doc::StoryRef::Body), before);
+        a.execute("view.darkMode", json!({"value": false})).unwrap();
+        assert!(!a.session.view.dark_mode && !a.session.dirty);
+    }
+
     #[test]
     fn dark_page_survives_restart() {
         let mut first = app();

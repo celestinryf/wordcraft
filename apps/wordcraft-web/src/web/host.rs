@@ -10,6 +10,7 @@
 //! - `{type: "open", doc, name, bytes: Uint8Array}` opens a document (as Open would).
 //! - `{type: "command", doc, id}` runs one of [`crate::host_rules::HOST_COMMANDS`] on that document.
 //! - `{type: "theme", value: "light" | "dark" | "system"}` sets the appearance, to match the host's.
+//! - `{type: "page", dark: bool}` shows the page dark (View › Switch Modes); a view setting, so the file is unchanged.
 //!
 //! To the host:
 //! - `{type: "ready"}` once the app is running and listening.
@@ -161,6 +162,13 @@ pub fn listen(app: Rc<RefCell<WordApp>>, state: Rc<HostState>, ctx: egui::Contex
                 let Some(value) = text("value") else { return };
                 if let Err(err) = app.execute("ui.theme", serde_json::json!({"value": value})) {
                     log::warn!("host: theme {value:?}: {err}");
+                }
+                ctx.request_repaint();
+            }
+            "page" => {
+                let Some(dark) = field("dark").and_then(|v| v.as_bool()) else { return };
+                if let Err(err) = app.execute("view.darkMode", serde_json::json!({"value": dark})) {
+                    log::warn!("host: dark page {dark}: {err}");
                 }
                 ctx.request_repaint();
             }
