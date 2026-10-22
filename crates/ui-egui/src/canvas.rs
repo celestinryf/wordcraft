@@ -73,6 +73,9 @@ pub struct CanvasState {
     pub canvas_rect: Option<Rect>,
     pub focused: bool,
     pub render_ms: f64,
+    pub render_total_ms: f64,
+    pub frames: u64,
+    pub pages_pending: bool,
     pub ime_preedit: String,
     /// Document faces added to the interface fonts so the input method's composition (#565) and a
     /// file name in the window caption can be drawn.
@@ -178,6 +181,9 @@ impl Default for CanvasState {
             canvas_rect: None,
             focused: false,
             render_ms: 0.0,
+            render_total_ms: 0.0,
+            frames: 0,
+            pages_pending: false,
             ime_preedit: String::new(),
             ime_faces: Vec::new(),
             want_focus: true,
@@ -908,6 +914,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
         let ppp = ui.ctx().pixels_per_point();
         let max_tex = ui.ctx().input(|i| i.max_texture_side) as f32;
         let mut rendered = 0;
+        let mut pending = false;
         let t0 = crate::now_ms();
         let mut rects = Vec::with_capacity(geo.rects.len());
         let content_origin = ui.min_rect().min;
@@ -955,6 +962,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                 rendered += 1;
                 fresh = true;
             } else if visible && !fresh {
+                pending = true;
                 ui.ctx().request_repaint();
             }
             let current_scale = geo.scale * ppp;
@@ -1045,7 +1053,10 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
         }
         if rendered > 0 {
             app.canvas.render_ms = crate::now_ms() - t0;
+            app.canvas.render_total_ms += app.canvas.render_ms;
         }
+        app.canvas.frames = app.canvas.frames.saturating_add(1);
+        app.canvas.pages_pending = pending;
         // Drop textures of pages that no longer exist, and of pages scrolled well out of view
         // (#811): scrolling through a long document kept every page it had shown in memory.
         let n = layout.pages.len();

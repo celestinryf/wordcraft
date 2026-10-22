@@ -71,13 +71,13 @@ pub fn start() {
                         app.start_screen();
                     }
                     let app = Rc::new(RefCell::new(app));
-                    if let Some(state) = host_state {
+                    if let Some(state) = host_state.clone() {
                         match host::listen(app.clone(), state, cc.egui_ctx.clone()) {
                             Ok(()) => host::post(&[("type", "ready".into())]),
                             Err(e) => log::error!("hosted mode is unavailable: {e}"),
                         }
                     }
-                    Ok(Box::new(WebShell { app, inbox, saves }))
+                    Ok(Box::new(WebShell { app, inbox, saves, host: host_state }))
                 }),
             )
             .await;
@@ -101,6 +101,7 @@ struct WebShell {
     app: Rc<RefCell<WordApp>>,
     inbox: Inbox,
     saves: Rc<PickerSaves>,
+    host: Option<Rc<host::HostState>>,
 }
 
 /// Saves the browser's save picker finishes after `download` has returned (#728). The app marks
@@ -166,6 +167,9 @@ impl eframe::App for WebShell {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if let Ok(mut app) = self.app.try_borrow_mut() {
             app.ui(ui);
+            if let Some(state) = &self.host {
+                host::after_frame(state, &mut app);
+            }
         }
     }
 }
