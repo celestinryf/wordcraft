@@ -14,7 +14,8 @@
 //!
 //! To the host:
 //! - `{type: "ready"}` once the app is running and listening.
-//! - `{type: "opened", doc, ok, error?}` after an open.
+//! - `{type: "opened", doc, ok, ms, error?}` after an open.
+//! - `{type: "drawn", doc, ms, frames, frameMs, renderMs, layoutMs}` once every page on screen has been drawn after an open.
 //! - `{type: "save", doc, name, bytes: Uint8Array}` when Save or Save As writes the document.
 //! - `{type: "dirty", doc, dirty: bool}` when unsaved changes appear or go away.
 //!
@@ -41,6 +42,37 @@ const MAX_DOC_CHARS: usize = 100;
 pub struct HostState {
     doc: RefCell<String>,
     last_dirty: Cell<Option<bool>>,
+    drawing: RefCell<Option<Drawing>>,
+}
+
+struct Drawing {
+    doc: String,
+    since: f64,
+    canvas_frames: u64,
+    render_ms: f64,
+    frames: u32,
+    frame_ms: f64,
+}
+
+pub fn after_frame(state: &HostState, app: &mut WordApp) {
+    let mut drawing = state.drawing.borrow_mut();
+    let Some(d) = drawing.as_mut() else { return };
+    d.frames = d.frames.saturating_add(1);
+    d.frame_ms += app.frame_ms;
+    if app.canvas.frames <= d.canvas_frames || app.canvas.pages_pending {
+        return;
+    }
+    let layout_ms = app.session.layout().ms;
+    post(&[
+        ("type", "drawn".into()),
+        ("doc", d.doc.clone().into()),
+        ("ms", (wordcraft_ui_egui::now_ms() - d.since).into()),
+        ("frames", d.frames.into()),
+        ("frameMs", d.frame_ms.into()),
+        ("renderMs", (app.canvas.render_total_ms - d.render_ms).into()),
+        ("layoutMs", layout_ms.into()),
+    ]);
+    *drawing = None;
 }
 
 /// Whether this page runs hosted: `host` is a key of the URL's query, and the page is in a frame.
@@ -121,6 +153,7 @@ pub fn listen(app: Rc<RefCell<WordApp>>, state: Rc<HostState>, ctx: egui::Contex
         };
         match kind.as_str() {
             "open" => {
+                let started = wordcraft_ui_egui::now_ms();
                 let opened = (|| {
                     let name = text("name").and_then(|n| clean_name(&n)).ok_or("the document has no name")?;
                     let bytes = field("bytes").and_then(|v| v.dyn_into::<js_sys::Uint8Array>().ok()).ok_or("the document has no bytes")?;
@@ -133,14 +166,24 @@ pub fn listen(app: Rc<RefCell<WordApp>>, state: Rc<HostState>, ctx: egui::Contex
                     settled(app.execute("file.open", serde_json::json!({"path": name, "data": data})))
                 })();
                 state.last_dirty.set(None);
+                let ms = wordcraft_ui_egui::now_ms() - started;
                 match opened {
                     Ok(()) => {
                         *state.doc.borrow_mut() = doc.clone();
-                        post(&[("type", "opened".into()), ("doc", doc.into()), ("ok", true.into())]);
+                        *state.drawing.borrow_mut() = Some(Drawing {
+                            doc: doc.clone(),
+                            since: started,
+                            canvas_frames: app.canvas.frames,
+                            render_ms: app.canvas.render_total_ms,
+                            frames: 0,
+                            frame_ms: 0.0,
+                        });
+                        post(&[("type", "opened".into()), ("doc", doc.into()), ("ok", true.into()), ("ms", ms.into())]);
                     }
                     Err(err) => {
                         // Whatever is still on show is no document of the host's: its commands are ignored.
                         state.doc.borrow_mut().clear();
+                        *state.drawing.borrow_mut() = None;
                         log::warn!("host: open failed: {err}");
                         post(&[("type", "opened".into()), ("doc", doc.into()), ("ok", false.into()), ("error", err.into())]);
                     }

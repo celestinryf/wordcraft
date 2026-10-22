@@ -128,3 +128,30 @@ fn scrolling_a_big_table_fingerprints_only_pages_coming_into_view() {
     assert!(max_textures <= 12, "textures kept while scrolling: {max_textures}");
     assert!(h.state().canvas.texture_count() >= 1, "the pages in view stay rendered");
 }
+
+#[test]
+fn a_host_can_tell_when_every_page_on_screen_is_drawn() {
+    let mut h = harness(big_table_doc(600, 8));
+    h.state_mut().execute("view.zoom", serde_json::json!({"value": 10})).unwrap();
+    h.step();
+    assert!(h.state().canvas.frames >= 1);
+    assert!(h.state().canvas.pages_pending, "more pages are on screen than one frame renders");
+    let painted = h.state().canvas.render_total_ms;
+    assert!(painted >= h.state().canvas.render_ms);
+    let mut steps = 0;
+    while h.state().canvas.pages_pending && steps < 60 {
+        let before = h.state().canvas.frames;
+        h.step();
+        assert!(h.state().canvas.frames > before, "every frame counts");
+        steps += 1;
+    }
+    assert!(!h.state().canvas.pages_pending, "every page on screen is drawn within 60 frames");
+    assert!(steps > 0);
+    assert!(h.state().canvas.render_total_ms >= painted);
+    let settled = h.state().canvas.render_total_ms;
+    let frames = h.state().canvas.frames;
+    h.run_steps(2);
+    assert!(h.state().canvas.frames > frames);
+    assert!(!h.state().canvas.pages_pending, "idle frames leave nothing to draw");
+    assert_eq!(h.state().canvas.render_total_ms, settled, "idle frames render no pages");
+}
